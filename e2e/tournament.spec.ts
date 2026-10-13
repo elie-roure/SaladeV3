@@ -1,0 +1,83 @@
+import { expect, test } from '@playwright/test'
+import { Buffer } from 'node:buffer'
+
+test('tournoi complet, rechargement, rencontres et compatibilité des exports', async ({ page }) => {
+  const errors: string[] = []
+  page.on('pageerror', error => errors.push(error.message))
+  await page.goto('/')
+  await expect(page).toHaveTitle('Salade · Tournoi à partenaires tournants')
+  await expect(page.locator('.brand')).toHaveText('salade.')
+  await page.locator('#names').fill('Alice <&>\nBenoît\nChloé\nDavid\nEmma')
+  await page.locator('#courts').fill('1')
+  await page.locator('#minutes').fill('0.1')
+  await page.locator('#rounds').fill('2')
+  await page.getByRole('button', { name: 'Créer le tournoi' }).click()
+  await expect(page.locator('.match')).toHaveCount(1)
+  await expect(page.locator('.badminton-court')).toBeVisible()
+  await expect(page.locator('.court-player')).toHaveCount(4)
+  await expect(page.locator('.court-net')).toBeVisible()
+  const court = await page.locator('.badminton-court').boundingBox()
+  expect(court).not.toBeNull()
+  expect(court!.width / court!.height).toBeCloseTo(13.4 / 6.1, 1)
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true)
+  await expect(page.locator('#encounters tr')).toHaveCount(5)
+  await page.locator('#timer-toggle').click()
+  await page.reload()
+  await expect(page.locator('#timer-toggle')).toHaveText('Pause')
+  await expect(page.locator('#timer-status')).toContainText('Temps écoulé', { timeout: 10000 })
+  await page.locator('#score-0-0').fill('-1')
+  await expect(page.getByRole('alert')).toContainText('entier')
+  await page.locator('#score-0-0').fill('5')
+  await page.locator('#score-0-1').fill('25')
+  await expect(page.locator('#next-round')).toBeEnabled()
+  await expect(page.locator('#encounters')).toContainText('1×')
+  await expect(page.locator('#encounters tr').first().locator('th')).toHaveText('Alice <&>')
+  await page.locator('#next-round').click()
+  await expect(page.locator('#round-title')).toHaveText('Manche 2 / 2')
+  await page.locator('#score-0-0').fill('125')
+  await page.locator('#score-0-1').fill('0')
+  await page.locator('#next-round').click()
+  await page.reload()
+  await expect(page.locator('#tournament-status')).toHaveText('Tournoi terminé')
+  const recap = await page.locator('#encounters').textContent()
+  await page.locator('#round-select').selectOption('0')
+  await page.locator('#score-0-0').fill('30')
+  await expect(page.locator('#encounters')).toHaveText(recap!)
+  await page.locator('#score-0-0').fill('')
+  await expect(page.getByRole('alert')).toContainText('manche passée')
+  await page.reload()
+  const backup = await page.evaluate(() => localStorage.getItem('volant.tournament.v1'))
+  expect(backup).not.toBeNull()
+  const exportPromise = page.waitForEvent('download')
+  await page.locator('#export').click()
+  const download = await exportPromise
+  expect(download.suggestedFilename()).toMatch(/^salade-\d{4}-\d{2}-\d{2}\.json$/)
+  expect(await download.failure()).toBeNull()
+  const exported = await download.createReadStream()
+  if (!exported) throw new Error('Export inaccessible')
+  const chunks: Buffer[] = []
+  for await (const chunk of exported) chunks.push(Buffer.from(chunk))
+  expect(JSON.parse(Buffer.concat(chunks).toString('utf8'))).toEqual(JSON.parse(backup!))
+  page.on('dialog', dialog => dialog.accept())
+  await page.locator('#new-tournament').click()
+  await page.locator('#import-file').setInputFiles({
+    name: 'ancien-export-v1.json', mimeType: 'application/json', buffer: Buffer.from(backup!),
+  })
+  await expect(page.locator('#tournament-status')).toHaveText('Tournoi terminé')
+  await page.locator('#new-tournament').click()
+  await page.locator('#import-file').setInputFiles({
+    name: 'invalide.json', mimeType: 'application/json', buffer: Buffer.from('{"version":1}'),
+  })
+  await expect(page.getByRole('alert')).toContainText('Import impossible')
+  expect(await page.evaluate(() => localStorage.getItem('volant.tournament.v1'))).toBe(backup)
+  await page.getByRole('button', { name: 'Revenir au tournoi actuel' }).click()
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true)
+  const dimensions = await page.locator('.encounters .table-wrap').evaluate(element => ({
+    width: element.clientWidth, scroll: element.scrollWidth, overflow: getComputedStyle(element).overflowX,
+  }))
+  if (page.viewportSize()!.width < 650) {
+    expect(dimensions.scroll).toBeGreaterThan(dimensions.width)
+    expect(dimensions.overflow).toBe('auto')
+  }
+  expect(errors).toEqual([])
+})

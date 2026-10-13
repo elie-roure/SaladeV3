@@ -1,0 +1,10 @@
+node_modules
+dist
+.tools
+.git
+.env
+.env.*
+test-results
+playwright-report
+*.log
+salade-local.tar
